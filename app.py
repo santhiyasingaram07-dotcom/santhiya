@@ -16,66 +16,112 @@ from sklearn.metrics import (
     confusion_matrix,
     mean_squared_error,
     mean_absolute_error,
-    r2_score
+    r2_score,
+    classification_report
 )
 
 # ============================================================
-# PAGE SETTINGS
+# PAGE CONFIGURATION
 # ============================================================
 
 st.set_page_config(
-    page_title="Insurance Risk Prediction",
+    page_title="Insurance Risk Prediction System",
     page_icon="🏥",
-    layout="wide"
+    layout="wide",
+    initial_sidebar_state="expanded"
 )
 
 # ============================================================
 # CUSTOM CSS
 # ============================================================
 
-st.markdown("""
-<style>
-.main {
-    padding-top: 1rem;
-}
+st.markdown(
+    """
+    <style>
 
-h1 {
-    font-weight: 700;
-}
+    .main {
+        padding-top: 1rem;
+    }
 
-div[data-testid="stMetric"] {
-    border: 1px solid #dddddd;
-    padding: 15px;
-    border-radius: 10px;
-}
+    .block-container {
+        padding-top: 2rem;
+        padding-bottom: 3rem;
+    }
 
-.risk-box {
-    padding: 25px;
-    border-radius: 15px;
-    text-align: center;
-    margin-top: 20px;
-    border: 1px solid #dddddd;
-}
+    h1 {
+        font-weight: 700;
+    }
 
-</style>
-""", unsafe_allow_html=True)
+    h2 {
+        font-weight: 650;
+    }
 
+    h3 {
+        font-weight: 600;
+    }
+
+    div[data-testid="stMetric"] {
+        border: 1px solid #dddddd;
+        padding: 15px;
+        border-radius: 12px;
+        background-color: #fafafa;
+    }
+
+    .risk-high {
+        padding: 25px;
+        border-radius: 15px;
+        text-align: center;
+        background-color: #ffe6e6;
+        border: 2px solid #ff4b4b;
+    }
+
+    .risk-low {
+        padding: 25px;
+        border-radius: 15px;
+        text-align: center;
+        background-color: #e6ffe6;
+        border: 2px solid #21a366;
+    }
+
+    .info-card {
+        padding: 20px;
+        border-radius: 12px;
+        border: 1px solid #dddddd;
+        background-color: #fafafa;
+        margin-bottom: 15px;
+    }
+
+    </style>
+    """,
+    unsafe_allow_html=True
+)
 
 # ============================================================
-# LOAD DATASET
+# DATASET
 # ============================================================
 
 CSV_FILE = "medical_insurance (2).csv"
 
 try:
-    df = pd.read_csv(CSV_FILE)
-except FileNotFoundError:
-    st.error(
-        f"Could not find '{CSV_FILE}'. "
-        "Make sure the CSV and app.py are in the same GitHub folder."
-    )
-    st.stop()
 
+    df = pd.read_csv(CSV_FILE)
+
+except FileNotFoundError:
+
+    st.error(
+        f"""
+        ❌ Dataset not found.
+
+        Please make sure that:
+
+        1. app.py
+        2. {CSV_FILE}
+
+        are in the same GitHub repository folder.
+        """
+    )
+
+    st.stop()
 
 # ============================================================
 # CLEAN COLUMN NAMES
@@ -85,13 +131,12 @@ df.columns = (
     df.columns
     .str.strip()
     .str.lower()
-    .str.replace(" ", "_")
-    .str.replace("-", "_")
+    .str.replace(" ", "_", regex=False)
+    .str.replace("-", "_", regex=False)
 )
 
-
 # ============================================================
-# FIND POSSIBLE TARGET COLUMN
+# TARGET DETECTION
 # ============================================================
 
 target_candidates = [
@@ -111,12 +156,13 @@ target_candidates = [
 target_column = None
 
 for candidate in target_candidates:
+
     if candidate in df.columns:
+
         target_column = candidate
         break
 
-
-# Look for binary columns automatically
+# Automatic binary target detection
 if target_column is None:
 
     binary_columns = []
@@ -126,20 +172,249 @@ if target_column is None:
         unique_values = df[col].dropna().unique()
 
         if len(unique_values) == 2:
+
             binary_columns.append(col)
 
-    # Prefer columns whose name contains risk
-    risk_binary = [
-        col for col in binary_columns
+    risk_columns = [
+        col
+        for col in binary_columns
         if "risk" in col.lower()
     ]
 
-    if risk_binary:
-        target_column = risk_binary[0]
+    if risk_columns:
+
+        target_column = risk_columns[0]
 
     elif binary_columns:
+
         target_column = binary_columns[-1]
 
+# ============================================================
+# MODEL VARIABLES
+# ============================================================
+
+model = None
+
+X = None
+y = None
+
+X_train = None
+X_test = None
+y_train = None
+y_test = None
+
+y_pred = None
+y_probability = None
+
+model_error = None
+
+target_mapping = {}
+
+# ============================================================
+# MODEL TRAINING
+# ============================================================
+
+if target_column is not None:
+
+    try:
+
+        model_df = df.dropna(
+            subset=[target_column]
+        ).copy()
+
+        X = model_df.drop(
+            columns=[target_column]
+        )
+
+        y = model_df[target_column]
+
+        unique_target = list(
+            y.dropna().unique()
+        )
+
+        # ----------------------------------------------------
+        # BINARY TARGET
+        # ----------------------------------------------------
+
+        if len(unique_target) == 2:
+
+            target_mapping = {
+                unique_target[0]: 0,
+                unique_target[1]: 1
+            }
+
+            y = y.map(target_mapping)
+
+            # ------------------------------------------------
+            # REMOVE ID COLUMNS
+            # ------------------------------------------------
+
+            id_columns = []
+
+            for col in X.columns:
+
+                name = col.lower()
+
+                if (
+                    name == "id"
+                    or name.endswith("_id")
+                    or name.startswith("id_")
+                ):
+
+                    id_columns.append(col)
+
+            X = X.drop(
+                columns=id_columns,
+                errors="ignore"
+            )
+
+            # ------------------------------------------------
+            # FEATURE TYPES
+            # ------------------------------------------------
+
+            numeric_features = (
+                X
+                .select_dtypes(
+                    include=["number"]
+                )
+                .columns
+                .tolist()
+            )
+
+            categorical_features = (
+                X
+                .select_dtypes(
+                    exclude=["number"]
+                )
+                .columns
+                .tolist()
+            )
+
+            # ------------------------------------------------
+            # NUMERIC PIPELINE
+            # ------------------------------------------------
+
+            numeric_pipeline = Pipeline(
+                steps=[
+                    (
+                        "imputer",
+                        SimpleImputer(
+                            strategy="median"
+                        )
+                    ),
+                    (
+                        "scaler",
+                        StandardScaler()
+                    )
+                ]
+            )
+
+            # ------------------------------------------------
+            # CATEGORICAL PIPELINE
+            # ------------------------------------------------
+
+            categorical_pipeline = Pipeline(
+                steps=[
+                    (
+                        "imputer",
+                        SimpleImputer(
+                            strategy="most_frequent"
+                        )
+                    ),
+                    (
+                        "encoder",
+                        OneHotEncoder(
+                            handle_unknown="ignore"
+                        )
+                    )
+                ]
+            )
+
+            # ------------------------------------------------
+            # PREPROCESSOR
+            # ------------------------------------------------
+
+            preprocessor = ColumnTransformer(
+                transformers=[
+                    (
+                        "numeric",
+                        numeric_pipeline,
+                        numeric_features
+                    ),
+                    (
+                        "categorical",
+                        categorical_pipeline,
+                        categorical_features
+                    )
+                ]
+            )
+
+            # ------------------------------------------------
+            # LOGISTIC REGRESSION
+            # ------------------------------------------------
+
+            model = Pipeline(
+                steps=[
+                    (
+                        "preprocessor",
+                        preprocessor
+                    ),
+                    (
+                        "classifier",
+                        LogisticRegression(
+                            max_iter=2000
+                        )
+                    )
+                ]
+            )
+
+            # ------------------------------------------------
+            # TRAIN TEST SPLIT
+            # ------------------------------------------------
+
+            X_train, X_test, y_train, y_test = (
+                train_test_split(
+                    X,
+                    y,
+                    test_size=0.20,
+                    random_state=42,
+                    stratify=y
+                )
+            )
+
+            # ------------------------------------------------
+            # TRAIN MODEL
+            # ------------------------------------------------
+
+            model.fit(
+                X_train,
+                y_train
+            )
+
+            # ------------------------------------------------
+            # PREDICTIONS
+            # ------------------------------------------------
+
+            y_pred = model.predict(
+                X_test
+            )
+
+            y_probability = (
+                model.predict_proba(
+                    X_test
+                )[:, 1]
+            )
+
+        else:
+
+            model_error = (
+                "The selected target column does not "
+                "contain exactly two classes."
+            )
+
+    except Exception as e:
+
+        model_error = str(e)
 
 # ============================================================
 # SIDEBAR
@@ -163,167 +438,33 @@ page = st.sidebar.radio(
 
 st.sidebar.markdown("---")
 
-st.sidebar.write("Dataset")
-st.sidebar.write(f"Rows: **{len(df):,}**")
-st.sidebar.write(f"Columns: **{len(df.columns)}**")
+st.sidebar.subheader("Dataset Information")
+
+st.sidebar.write(
+    f"Rows: **{len(df):,}**"
+)
+
+st.sidebar.write(
+    f"Columns: **{len(df.columns):,}**"
+)
 
 if target_column:
+
     st.sidebar.success(
         f"Target: {target_column}"
     )
+
 else:
+
     st.sidebar.warning(
-        "No binary risk target detected."
+        "Risk target not detected."
     )
 
+st.sidebar.markdown("---")
 
-# ============================================================
-# PREPARE MODEL
-# ============================================================
-
-model = None
-X = None
-y = None
-X_train = None
-X_test = None
-y_train = None
-y_test = None
-y_pred = None
-y_probability = None
-model_error = None
-
-
-if target_column is not None:
-
-    try:
-
-        model_df = df.dropna(subset=[target_column]).copy()
-
-        X = model_df.drop(columns=[target_column])
-        y = model_df[target_column]
-
-        # Convert target to binary automatically
-        unique_target = list(y.dropna().unique())
-
-        if len(unique_target) == 2:
-
-            target_mapping = {
-                unique_target[0]: 0,
-                unique_target[1]: 1
-            }
-
-            y = y.map(target_mapping)
-
-            # Remove obvious ID columns
-            id_columns = []
-
-            for col in X.columns:
-
-                name = col.lower()
-
-                if (
-                    name == "id"
-                    or name.endswith("_id")
-                    or name.startswith("id_")
-                ):
-                    id_columns.append(col)
-
-            X = X.drop(columns=id_columns, errors="ignore")
-
-            numeric_features = X.select_dtypes(
-                include=["number"]
-            ).columns.tolist()
-
-            categorical_features = X.select_dtypes(
-                exclude=["number"]
-            ).columns.tolist()
-
-            numeric_pipeline = Pipeline(
-                steps=[
-                    (
-                        "imputer",
-                        SimpleImputer(strategy="median")
-                    ),
-                    (
-                        "scaler",
-                        StandardScaler()
-                    )
-                ]
-            )
-
-            categorical_pipeline = Pipeline(
-                steps=[
-                    (
-                        "imputer",
-                        SimpleImputer(
-                            strategy="most_frequent"
-                        )
-                    ),
-                    (
-                        "encoder",
-                        OneHotEncoder(
-                            handle_unknown="ignore"
-                        )
-                    )
-                ]
-            )
-
-            preprocessor = ColumnTransformer(
-                transformers=[
-                    (
-                        "numeric",
-                        numeric_pipeline,
-                        numeric_features
-                    ),
-                    (
-                        "categorical",
-                        categorical_pipeline,
-                        categorical_features
-                    )
-                ]
-            )
-
-            model = Pipeline(
-                steps=[
-                    (
-                        "preprocessor",
-                        preprocessor
-                    ),
-                    (
-                        "classifier",
-                        LogisticRegression(
-                            max_iter=2000
-                        )
-                    )
-                ]
-            )
-
-            X_train, X_test, y_train, y_test = train_test_split(
-                X,
-                y,
-                test_size=0.20,
-                random_state=42,
-                stratify=y
-            )
-
-            model.fit(X_train, y_train)
-
-            y_pred = model.predict(X_test)
-
-            y_probability = model.predict_proba(
-                X_test
-            )[:, 1]
-
-        else:
-            model_error = (
-                "The detected target does not contain exactly "
-                "two classes."
-            )
-
-    except Exception as e:
-
-        model_error = str(e)
-
+st.sidebar.caption(
+    "Logistic Regression Insurance Risk Prediction"
+)
 
 # ============================================================
 # DASHBOARD
@@ -331,17 +472,19 @@ if target_column is not None:
 
 if page == "🏠 Dashboard":
 
-    st.title("🏥 Insurance Risk Prediction System")
+    st.title(
+        "🏥 Insurance Risk Prediction System"
+    )
 
     st.write(
-        "Medical insurance risk analysis using "
-        "Logistic Regression."
+        "A machine-learning based insurance risk "
+        "prediction and analysis platform."
     )
 
     st.markdown("---")
 
     # --------------------------------------------------------
-    # METRICS
+    # MAIN METRICS
     # --------------------------------------------------------
 
     total_rows = len(df)
@@ -349,13 +492,25 @@ if page == "🏠 Dashboard":
 
     if target_column:
 
-        high_risk_count = int(
-            (df[target_column].astype(str).str.lower()
-             .isin(["1", "high", "high risk", "true", "yes"]))
-            .sum()
+        target_values = (
+            df[target_column]
+            .astype(str)
+            .str.lower()
         )
 
-        low_risk_count = total_rows - high_risk_count
+        high_risk_count = target_values.isin(
+            [
+                "1",
+                "high",
+                "high risk",
+                "true",
+                "yes"
+            ]
+        ).sum()
+
+        low_risk_count = (
+            total_rows - high_risk_count
+        )
 
     else:
 
@@ -365,24 +520,69 @@ if page == "🏠 Dashboard":
     c1, c2, c3, c4 = st.columns(4)
 
     c1.metric(
-        "Total Applicants",
+        "👥 Total Applicants",
         f"{total_rows:,}"
     )
 
     c2.metric(
-        "Total Columns",
+        "📋 Total Columns",
         f"{total_columns:,}"
     )
 
     c3.metric(
-        "High Risk",
+        "🔴 High Risk",
         f"{high_risk_count:,}"
     )
 
     c4.metric(
-        "Not High Risk",
+        "🟢 Not High Risk",
         f"{low_risk_count:,}"
     )
+
+    st.markdown("---")
+
+    # --------------------------------------------------------
+    # MODEL STATUS
+    # --------------------------------------------------------
+
+    st.subheader(
+        "🤖 Machine Learning Model"
+    )
+
+    if model is not None:
+
+        st.success(
+            "Logistic Regression model trained successfully."
+        )
+
+        mc1, mc2, mc3 = st.columns(3)
+
+        mc1.metric(
+            "Training Records",
+            f"{len(X_train):,}"
+        )
+
+        mc2.metric(
+            "Testing Records",
+            f"{len(X_test):,}"
+        )
+
+        mc3.metric(
+            "Features",
+            f"{len(X.columns):,}"
+        )
+
+    else:
+
+        st.error(
+            "Model is not available."
+        )
+
+        if model_error:
+
+            st.warning(
+                model_error
+            )
 
     st.markdown("---")
 
@@ -390,7 +590,9 @@ if page == "🏠 Dashboard":
     # DATASET PREVIEW
     # --------------------------------------------------------
 
-    st.subheader("📊 Dataset Preview")
+    st.subheader(
+        "📊 Dataset Preview"
+    )
 
     st.dataframe(
         df.head(10),
@@ -403,24 +605,33 @@ if page == "🏠 Dashboard":
 
     if target_column:
 
-        st.subheader("📊 Risk Distribution")
+        st.subheader(
+            "📊 Risk Distribution"
+        )
 
         risk_distribution = (
             df[target_column]
+            .astype(str)
             .value_counts()
             .rename_axis("Risk")
-            .reset_index(name="Applicants")
+            .reset_index(
+                name="Applicants"
+            )
         )
 
         st.bar_chart(
-            risk_distribution.set_index("Risk")
+            risk_distribution.set_index(
+                "Risk"
+            )
         )
 
     # --------------------------------------------------------
     # NUMERICAL SUMMARY
     # --------------------------------------------------------
 
-    st.subheader("📈 Numerical Data Summary")
+    st.subheader(
+        "📈 Numerical Data Summary"
+    )
 
     numeric_df = df.select_dtypes(
         include="number"
@@ -433,40 +644,44 @@ if page == "🏠 Dashboard":
             use_container_width=True
         )
 
-
 # ============================================================
 # ONLINE INSURANCE APPLICATION
 # ============================================================
 
 elif page == "📝 Online Insurance Application":
 
-    st.title("📝 Online Insurance Application")
+    st.title(
+        "📝 Online Insurance Application"
+    )
 
     st.write(
-        "Enter the applicant's information below."
+        "Complete the applicant information below "
+        "to estimate insurance risk."
     )
 
     if model is None:
 
         st.error(
-            "The Logistic Regression model could not be created. "
-            "Please check that your CSV contains a binary risk "
-            "target column."
+            "The prediction model is unavailable."
         )
 
         if model_error:
-            st.warning(model_error)
+
+            st.warning(
+                model_error
+            )
 
         st.stop()
 
     # --------------------------------------------------------
-    # SELECT IMPORTANT COLUMNS AUTOMATICALLY
+    # IMPORTANT COLUMN SELECTION
     # --------------------------------------------------------
 
     all_features = X.columns.tolist()
 
     keyword_groups = {
-        "Personal Information": [
+
+        "👤 Personal Information": [
             "age",
             "gender",
             "sex",
@@ -475,19 +690,21 @@ elif page == "📝 Online Insurance Application":
             "state",
             "city",
             "depend",
-            "household"
+            "household",
+            "family"
         ],
 
-        "Financial Information": [
+        "💰 Financial & Employment Information": [
             "income",
             "salary",
             "employment",
             "occupation",
             "education",
-            "job"
+            "job",
+            "work"
         ],
 
-        "Health Information": [
+        "❤️ Health Information": [
             "bmi",
             "smok",
             "alcohol",
@@ -498,30 +715,39 @@ elif page == "📝 Online Insurance Application":
             "cholesterol",
             "disease",
             "condition",
-            "health"
+            "health",
+            "exercise",
+            "physical"
         ],
 
-        "Medical History": [
+        "🏥 Medical History": [
             "hospital",
             "surgery",
             "medication",
             "medical",
             "family_history",
-            "claim"
+            "claim",
+            "doctor",
+            "diagnosis",
+            "treatment"
         ],
 
-        "Insurance Information": [
+        "🛡️ Insurance Information": [
             "insurance",
             "coverage",
             "premium",
             "policy",
-            "previous"
+            "previous",
+            "plan",
+            "deductible",
+            "benefit"
         ]
     }
 
     selected_columns = []
 
-    for group_keywords in keyword_groups.values():
+    # Automatically identify important columns
+    for keywords in keyword_groups.values():
 
         for col in all_features:
 
@@ -529,27 +755,30 @@ elif page == "📝 Online Insurance Application":
 
             if any(
                 keyword in col_lower
-                for keyword in group_keywords
+                for keyword in keywords
             ):
 
                 if col not in selected_columns:
+
                     selected_columns.append(col)
 
-    # Add additional columns if the dataset has only a few
+    # If too few columns were detected
     if len(selected_columns) < 5:
 
         selected_columns = all_features[:15]
 
-    # Limit UI to important fields
+    # Prevent extremely large forms
     selected_columns = selected_columns[:30]
 
     user_input = {}
 
     # --------------------------------------------------------
-    # CREATE INPUTS
+    # CREATE FORM
     # --------------------------------------------------------
 
-    for section_name, keywords in keyword_groups.items():
+    for section_name, keywords in (
+        keyword_groups.items()
+    ):
 
         section_columns = []
 
@@ -564,21 +793,40 @@ elif page == "📝 Online Insurance Application":
 
         if section_columns:
 
-            st.subheader(section_name)
+            st.subheader(
+                section_name
+            )
 
-            cols = st.columns(2)
+            form_columns = st.columns(2)
 
-            for i, col in enumerate(section_columns):
+            for i, col in enumerate(
+                section_columns
+            ):
 
-                with cols[i % 2]:
+                with form_columns[
+                    i % 2
+                ]:
 
                     series = df[col]
 
-                    # Categorical column
+                    label = (
+                        col
+                        .replace("_", " ")
+                        .title()
+                    )
+
+                    # ----------------------------------------
+                    # CATEGORICAL INPUT
+                    # ----------------------------------------
+
                     if (
                         series.dtype == "object"
-                        or str(series.dtype).startswith("category")
-                        or series.nunique(dropna=True) <= 10
+                        or str(
+                            series.dtype
+                        ).startswith("category")
+                        or series.nunique(
+                            dropna=True
+                        ) <= 10
                     ):
 
                         values = (
@@ -593,30 +841,44 @@ elif page == "📝 Online Insurance Application":
 
                         if values:
 
-                            user_input[col] = st.selectbox(
-                                col.replace("_", " ").title(),
-                                values,
-                                key=f"input_{col}"
+                            user_input[col] = (
+                                st.selectbox(
+                                    label,
+                                    values,
+                                    key=f"input_{col}"
+                                )
                             )
 
-                    # Numeric column
+                    # ----------------------------------------
+                    # NUMERIC INPUT
+                    # ----------------------------------------
+
                     else:
 
-                        median_value = series.median()
+                        median_value = (
+                            series.median()
+                        )
 
-                        if pd.isna(median_value):
+                        if pd.isna(
+                            median_value
+                        ):
+
                             median_value = 0.0
 
-                        user_input[col] = st.number_input(
-                            col.replace("_", " ").title(),
-                            value=float(median_value),
-                            key=f"input_{col}"
+                        user_input[col] = (
+                            st.number_input(
+                                label,
+                                value=float(
+                                    median_value
+                                ),
+                                key=f"input_{col}"
+                            )
                         )
 
     st.markdown("---")
 
     # --------------------------------------------------------
-    # PREDICT
+    # PREDICT BUTTON
     # --------------------------------------------------------
 
     if st.button(
@@ -625,22 +887,27 @@ elif page == "📝 Online Insurance Application":
         use_container_width=True
     ):
 
-        # Start with typical values for every model feature
         application = {}
 
+        # Fill every model feature
         for col in all_features:
 
             series = X[col]
 
             if col in user_input:
 
-                application[col] = user_input[col]
+                application[col] = (
+                    user_input[col]
+                )
 
-            elif pd.api.types.is_numeric_dtype(series):
+            elif pd.api.types.is_numeric_dtype(
+                series
+            ):
 
                 value = series.median()
 
                 if pd.isna(value):
+
                     value = 0
 
                 application[col] = value
@@ -650,8 +917,13 @@ elif page == "📝 Online Insurance Application":
                 mode = series.mode()
 
                 if len(mode) > 0:
-                    application[col] = mode.iloc[0]
+
+                    application[col] = (
+                        mode.iloc[0]
+                    )
+
                 else:
+
                     application[col] = "Unknown"
 
         application_df = pd.DataFrame(
@@ -664,39 +936,88 @@ elif page == "📝 Online Insurance Application":
                 application_df
             )[0]
 
-            probability = model.predict_proba(
-                application_df
-            )[0][1]
+            probability = (
+                model.predict_proba(
+                    application_df
+                )[0][1]
+            )
+
+            probability_percent = (
+                probability * 100
+            )
 
             st.markdown("---")
 
-            st.subheader("🏥 Prediction Result")
+            st.subheader(
+                "🏥 Prediction Result"
+            )
 
-            probability_percent = probability * 100
+            # ------------------------------------------------
+            # HIGH RISK
+            # ------------------------------------------------
 
             if prediction == 1:
 
-                st.error(
-                    "🔴 HIGH RISK"
+                st.markdown(
+                    f"""
+                    <div class="risk-high">
+
+                    <h2>🔴 HIGH RISK</h2>
+
+                    <h3>
+                    Estimated Risk:
+                    {probability_percent:.2f}%
+                    </h3>
+
+                    </div>
+                    """,
+                    unsafe_allow_html=True
                 )
 
-                st.write(
-                    f"Estimated high-risk probability: "
-                    f"**{probability_percent:.2f}%**"
-                )
+            # ------------------------------------------------
+            # LOW RISK
+            # ------------------------------------------------
 
             else:
 
-                st.success(
-                    "🟢 NOT HIGH RISK"
+                st.markdown(
+                    f"""
+                    <div class="risk-low">
+
+                    <h2>🟢 NOT HIGH RISK</h2>
+
+                    <h3>
+                    Estimated High-Risk Probability:
+                    {probability_percent:.2f}%
+                    </h3>
+
+                    </div>
+                    """,
+                    unsafe_allow_html=True
                 )
 
-                st.write(
-                    f"Estimated high-risk probability: "
-                    f"**{probability_percent:.2f}%**"
-                )
+            st.markdown("---")
 
-            # Probability chart
+            # ------------------------------------------------
+            # PROBABILITY METRICS
+            # ------------------------------------------------
+
+            p1, p2 = st.columns(2)
+
+            p1.metric(
+                "🟢 Not High Risk",
+                f"{(1 - probability) * 100:.2f}%"
+            )
+
+            p2.metric(
+                "🔴 High Risk",
+                f"{probability * 100:.2f}%"
+            )
+
+            # ------------------------------------------------
+            # PROBABILITY GRAPH
+            # ------------------------------------------------
+
             probability_df = pd.DataFrame(
                 {
                     "Category": [
@@ -710,7 +1031,9 @@ elif page == "📝 Online Insurance Application":
                 }
             )
 
-            st.subheader("📊 Risk Probability")
+            st.subheader(
+                "📊 Risk Probability"
+            )
 
             st.bar_chart(
                 probability_df.set_index(
@@ -719,9 +1042,13 @@ elif page == "📝 Online Insurance Application":
             )
 
             st.info(
-                "This is a machine-learning classification result "
-                "and should not be treated as a medical diagnosis "
-                "or an automatic insurance underwriting decision."
+                """
+                This prediction is generated by a
+                Logistic Regression machine-learning model.
+                It is intended for project/demo purposes and
+                should not be used as an automatic medical
+                diagnosis or insurance underwriting decision.
+                """
             )
 
         except Exception as e:
@@ -732,14 +1059,15 @@ elif page == "📝 Online Insurance Application":
 
             st.exception(e)
 
-
 # ============================================================
 # RISK ANALYSIS
 # ============================================================
 
 elif page == "📊 Risk Analysis":
 
-    st.title("📊 Insurance Risk Analysis")
+    st.title(
+        "📊 Insurance Risk Analysis"
+    )
 
     if target_column is None:
 
@@ -749,24 +1077,44 @@ elif page == "📊 Risk Analysis":
 
     else:
 
-        st.subheader("Risk Distribution")
+        # ----------------------------------------------------
+        # RISK DISTRIBUTION
+        # ----------------------------------------------------
+
+        st.subheader(
+            "📊 Risk Distribution"
+        )
 
         risk_counts = (
             df[target_column]
+            .astype(str)
             .value_counts()
         )
 
-        st.bar_chart(risk_counts)
+        st.bar_chart(
+            risk_counts
+        )
 
-        st.subheader("Risk Percentages")
+        # ----------------------------------------------------
+        # RISK PERCENTAGE
+        # ----------------------------------------------------
+
+        st.subheader(
+            "📈 Risk Percentages"
+        )
 
         risk_percentage = (
             df[target_column]
-            .value_counts(normalize=True)
+            .astype(str)
+            .value_counts(
+                normalize=True
+            )
             * 100
         )
 
-        risk_percentage = risk_percentage.round(2)
+        risk_percentage = (
+            risk_percentage.round(2)
+        )
 
         st.dataframe(
             risk_percentage.rename(
@@ -776,22 +1124,57 @@ elif page == "📊 Risk Analysis":
         )
 
         # ----------------------------------------------------
-        # NUMERICAL VARIABLES
+        # NUMERICAL ANALYSIS
         # ----------------------------------------------------
 
-        numeric_columns = X.select_dtypes(
-            include="number"
-        ).columns.tolist()
+        numeric_columns = (
+            X
+            .select_dtypes(
+                include="number"
+            )
+            .columns
+            .tolist()
+        )
 
         if numeric_columns:
 
-            selected_numeric = st.selectbox(
-                "Select a numerical column",
-                numeric_columns
+            st.subheader(
+                "🔢 Numerical Variable Analysis"
             )
 
-            st.subheader(
-                f"Distribution of {selected_numeric}"
+            selected_numeric = (
+                st.selectbox(
+                    "Select a numerical column",
+                    numeric_columns
+                )
+            )
+
+            st.write(
+                f"Analysis of **{selected_numeric}**"
+            )
+
+            numeric_stats = pd.DataFrame(
+                {
+                    "Statistic": [
+                        "Mean",
+                        "Median",
+                        "Minimum",
+                        "Maximum",
+                        "Missing Values"
+                    ],
+                    "Value": [
+                        df[selected_numeric].mean(),
+                        df[selected_numeric].median(),
+                        df[selected_numeric].min(),
+                        df[selected_numeric].max(),
+                        df[selected_numeric].isna().sum()
+                    ]
+                }
+            )
+
+            st.dataframe(
+                numeric_stats,
+                use_container_width=True
             )
 
             st.line_chart(
@@ -801,31 +1184,40 @@ elif page == "📊 Risk Analysis":
             )
 
         # ----------------------------------------------------
-        # CATEGORICAL VARIABLES
+        # CATEGORICAL ANALYSIS
         # ----------------------------------------------------
 
-        categorical_columns = X.select_dtypes(
-            exclude="number"
-        ).columns.tolist()
+        categorical_columns = (
+            X
+            .select_dtypes(
+                exclude="number"
+            )
+            .columns
+            .tolist()
+        )
 
         if categorical_columns:
 
-            selected_category = st.selectbox(
-                "Select a categorical column",
-                categorical_columns
-            )
-
             st.subheader(
-                f"Category Distribution: "
-                f"{selected_category}"
+                "🔤 Categorical Variable Analysis"
             )
 
-            st.bar_chart(
+            selected_category = (
+                st.selectbox(
+                    "Select a categorical column",
+                    categorical_columns
+                )
+            )
+
+            category_counts = (
                 df[selected_category]
                 .astype(str)
                 .value_counts()
             )
 
+            st.bar_chart(
+                category_counts
+            )
 
 # ============================================================
 # MODEL EVALUATION
@@ -833,15 +1225,25 @@ elif page == "📊 Risk Analysis":
 
 elif page == "📈 Model Evaluation":
 
-    st.title("📈 Logistic Regression Evaluation")
+    st.title(
+        "📈 Logistic Regression Model Evaluation"
+    )
 
-    if model is None or y_test is None:
+    if (
+        model is None
+        or y_test is None
+        or y_pred is None
+    ):
 
         st.error(
             "Model evaluation is not available."
         )
 
     else:
+
+        # ----------------------------------------------------
+        # CLASSIFICATION METRICS
+        # ----------------------------------------------------
 
         accuracy = accuracy_score(
             y_test,
@@ -911,35 +1313,41 @@ elif page == "📈 Model Evaluation":
             y_pred
         )
 
-        st.subheader("Error Metrics")
+        st.subheader(
+            "📐 Error Metrics"
+        )
 
-        c1, c2, c3, c4 = st.columns(4)
+        e1, e2, e3, e4 = st.columns(4)
 
-        c1.metric(
+        e1.metric(
             "MSE",
             f"{mse:.4f}"
         )
 
-        c2.metric(
+        e2.metric(
             "MAE",
             f"{mae:.4f}"
         )
 
-        c3.metric(
+        e3.metric(
             "RMSE",
             f"{rmse:.4f}"
         )
 
-        c4.metric(
+        e4.metric(
             "R²",
             f"{r2:.4f}"
         )
+
+        st.markdown("---")
 
         # ----------------------------------------------------
         # CONFUSION MATRIX
         # ----------------------------------------------------
 
-        st.subheader("Confusion Matrix")
+        st.subheader(
+            "🔲 Confusion Matrix"
+        )
 
         cm = confusion_matrix(
             y_test,
@@ -963,19 +1371,57 @@ elif page == "📈 Model Evaluation":
             use_container_width=True
         )
 
+        st.bar_chart(
+            cm_df
+        )
+
+        # ----------------------------------------------------
+        # CLASSIFICATION REPORT
+        # ----------------------------------------------------
+
+        st.subheader(
+            "📋 Classification Report"
+        )
+
+        report = classification_report(
+            y_test,
+            y_pred,
+            output_dict=True,
+            zero_division=0
+        )
+
+        report_df = (
+            pd.DataFrame(report)
+            .transpose()
+        )
+
+        st.dataframe(
+            report_df,
+            use_container_width=True
+        )
+
         # ----------------------------------------------------
         # ACTUAL VS PREDICTED
         # ----------------------------------------------------
 
-        comparison = pd.DataFrame(
-            {
-                "Actual": y_test.values[:100],
-                "Predicted": y_pred[:100]
-            }
+        st.subheader(
+            "🔍 Actual vs Predicted Sample"
         )
 
-        st.subheader(
-            "Actual vs Predicted Sample"
+        sample_size = min(
+            100,
+            len(y_test)
+        )
+
+        comparison = pd.DataFrame(
+            {
+                "Actual": y_test.values[
+                    :sample_size
+                ],
+                "Predicted": y_pred[
+                    :sample_size
+                ]
+            }
         )
 
         st.dataframe(
@@ -983,14 +1429,20 @@ elif page == "📈 Model Evaluation":
             use_container_width=True
         )
 
-
 # ============================================================
 # COLUMN ANALYSIS
 # ============================================================
 
 elif page == "📋 Column Analysis":
 
-    st.title("📋 Complete Column Analysis")
+    st.title(
+        "📋 Complete Column Analysis"
+    )
+
+    st.write(
+        "Detailed information about every column "
+        "in the insurance dataset."
+    )
 
     analysis = []
 
@@ -998,19 +1450,26 @@ elif page == "📋 Column Analysis":
 
         data = df[column]
 
-        if pd.api.types.is_numeric_dtype(data):
+        if pd.api.types.is_numeric_dtype(
+            data
+        ):
 
             analysis.append(
                 {
                     "Column": column,
                     "Type": "Numerical",
-                    "Count": int(data.count()),
-                    "Missing": int(data.isna().sum()),
+                    "Count": int(
+                        data.count()
+                    ),
+                    "Missing": int(
+                        data.isna().sum()
+                    ),
                     "Different Values": int(
                         data.nunique()
                     ),
                     "Average": round(
-                        data.mean(), 3
+                        data.mean(),
+                        3
                     ),
                     "Minimum": data.min(),
                     "Maximum": data.max()
@@ -1023,8 +1482,12 @@ elif page == "📋 Column Analysis":
                 {
                     "Column": column,
                     "Type": "Categorical",
-                    "Count": int(data.count()),
-                    "Missing": int(data.isna().sum()),
+                    "Count": int(
+                        data.count()
+                    ),
+                    "Missing": int(
+                        data.isna().sum()
+                    ),
                     "Different Values": int(
                         data.nunique()
                     ),
@@ -1046,14 +1509,22 @@ elif page == "📋 Column Analysis":
 
     st.markdown("---")
 
-    st.subheader("🔎 Individual Column Analysis")
+    # --------------------------------------------------------
+    # INDIVIDUAL COLUMN
+    # --------------------------------------------------------
+
+    st.subheader(
+        "🔎 Individual Column Analysis"
+    )
 
     selected_column = st.selectbox(
         "Select a column",
         df.columns
     )
 
-    selected_data = df[selected_column]
+    selected_data = df[
+        selected_column
+    ]
 
     c1, c2, c3 = st.columns(3)
 
@@ -1072,14 +1543,16 @@ elif page == "📋 Column Analysis":
         f"{selected_data.isna().sum():,}"
     )
 
-    st.subheader("Category / Value Distribution")
+    st.subheader(
+        "📊 Value Distribution"
+    )
 
     st.bar_chart(
-        selected_data.astype(str)
+        selected_data
+        .astype(str)
         .value_counts()
         .head(30)
     )
-
 
 # ============================================================
 # FAIRNESS ANALYSIS
@@ -1087,20 +1560,29 @@ elif page == "📋 Column Analysis":
 
 elif page == "⚖️ Fairness Analysis":
 
-    st.title("⚖️ Fairness Analysis")
+    st.title(
+        "⚖️ Fairness Analysis"
+    )
 
     st.write(
-        "This section compares model prediction rates "
-        "across available demographic groups."
+        """
+        This section compares the model's predicted
+        high-risk rates across selected demographic
+        groups.
+        """
     )
 
     if model is None:
 
         st.warning(
-            "The Logistic Regression model is not available."
+            "The Logistic Regression model is unavailable."
         )
 
     else:
+
+        # ----------------------------------------------------
+        # FIND DEMOGRAPHIC COLUMNS
+        # ----------------------------------------------------
 
         fairness_candidates = []
 
@@ -1117,27 +1599,38 @@ elif page == "⚖️ Fairness Analysis":
                     "region",
                     "race",
                     "ethnicity",
-                    "marital"
+                    "marital",
+                    "state"
                 ]
             ):
 
-                fairness_candidates.append(col)
+                fairness_candidates.append(
+                    col
+                )
 
         if fairness_candidates:
 
-            fairness_column = st.selectbox(
-                "Select demographic column",
-                fairness_candidates
+            fairness_column = (
+                st.selectbox(
+                    "Select demographic column",
+                    fairness_candidates
+                )
             )
 
             fairness_df = X_test.copy()
 
-            fairness_df["actual"] = y_test.values
+            fairness_df["actual"] = (
+                y_test.values
+            )
 
-            fairness_df["predicted"] = y_pred
+            fairness_df["predicted"] = (
+                y_pred
+            )
 
             fairness_df["group"] = (
-                fairness_df[fairness_column]
+                fairness_df[
+                    fairness_column
+                ]
                 .astype(str)
             )
 
@@ -1145,7 +1638,10 @@ elif page == "⚖️ Fairness Analysis":
                 fairness_df
                 .groupby("group")
                 .agg(
-                    Applicants=("predicted", "count"),
+                    Applicants=(
+                        "predicted",
+                        "count"
+                    ),
                     Predicted_High_Risk=(
                         "predicted",
                         "sum"
@@ -1159,11 +1655,16 @@ elif page == "⚖️ Fairness Analysis":
                 fairness_summary[
                     "Predicted_High_Risk"
                 ]
-                / fairness_summary[
+                /
+                fairness_summary[
                     "Applicants"
                 ]
                 * 100
             ).round(2)
+
+            st.subheader(
+                "📊 Group Comparison"
+            )
 
             st.dataframe(
                 fairness_summary,
@@ -1171,7 +1672,7 @@ elif page == "⚖️ Fairness Analysis":
             )
 
             st.subheader(
-                "Predicted High-Risk Rate"
+                "📈 Predicted High-Risk Rate"
             )
 
             st.bar_chart(
@@ -1180,20 +1681,33 @@ elif page == "⚖️ Fairness Analysis":
                 ]
             )
 
+            st.info(
+                """
+                Fairness analysis is provided for
+                educational and model-auditing purposes.
+                Differences between groups do not by
+                themselves prove that a model is unfair;
+                they indicate areas that may require
+                further investigation.
+                """
+            )
+
         else:
 
             st.info(
-                "No obvious demographic columns were "
-                "automatically detected."
+                """
+                No obvious demographic columns were
+                automatically detected in the dataset.
+                """
             )
-
 
 # ============================================================
 # FOOTER
 # ============================================================
 
-st.sidebar.markdown("---")
+st.markdown("---")
 
-st.sidebar.caption(
-    "Insurance Risk Prediction • Logistic Regression"
+st.caption(
+    "🏥 Insurance Risk Prediction System | "
+    "Logistic Regression | Streamlit"
 )
